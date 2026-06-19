@@ -1,0 +1,55 @@
+# Render Blueprint para la API Yupay Turismo (Node + Express + Supabase).
+# Despliega SOLO la carpeta api/ (rootDir). El frontend web (web/) y la app Android
+# (02_app/) no se despliegan con este blueprint.
+#
+# Uso:
+#   1) Sube este repositorio a GitHub/GitLab.
+#   2) En Render: "New +" -> "Blueprint" -> selecciona el repo (Render detecta este
+#      render.yaml automáticamente).
+#   3) Render crea el servicio. Entra a "Environment" y rellena los secretos marcados
+#      abajo con "sync: false" (no se versionan):
+#        SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY,
+#        GEMINI_API_KEY, PASSWORD_RESET_REDIRECT_URL.
+#   4) Tras el deploy tendrás una URL pública https://<servicio>.onrender.com
+#      (ese es el baseUrl que usará la app Android y la consola web de pruebas).
+#   5) Si usas el reset de contraseña, añade la URL de tu página de reset a
+#      Supabase -> Authentication -> URL Configuration -> Redirect URLs.
+#
+# Nota: el plan "free" se suspende tras inactividad (cold start de ~30-60 s en la
+# primera petición). Para evitarlo, sube de plan o usa un ping periódico.
+services:
+  - type: web
+    name: yupay-turismo-api
+    runtime: node
+    rootDir: api
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Fija la versión de Node que usará Render.
+      - key: NODE_VERSION
+        value: 20.18.1
+      # --- Secretos: NO se versionan. Rellénalos en el dashboard de Render. ---
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PASSWORD_RESET_REDIRECT_URL
+        sync: false
+      # --- No secretos: valores por defecto (editables en el dashboard). ---
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash-lite
+      - key: CONTENT_MIN_NEW_VISITS
+        value: "10"
+      - key: CONTENT_MIN_PRODUCT_CHANGES
+        value: "3"
+      - key: CONTENT_REGEN_DAYS
+        value: "30"
+    # PORT lo inyecta Render automáticamente; el server ya escucha en process.env.PORT.
