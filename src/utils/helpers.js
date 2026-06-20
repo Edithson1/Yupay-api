@@ -16,10 +16,16 @@ function fail(res, status, error) {
 
 /**
  * Mapea un error de Supabase (Auth/PostgREST) a un código HTTP (regla #3):
- *   error de auth -> 401, not found -> 404, conflict -> 409, resto -> 500.
+ *   rate-limit -> 429, error de auth -> 401, not found -> 404, conflict -> 409, resto -> 500.
  */
 function httpFromSupabaseError(error) {
   if (!error) return 500;
+
+  // Rate limit (p.ej. el envío de correos de Supabase: "email rate limit exceeded").
+  // Se comprueba antes que el resto para no enmascararlo como 401/500.
+  if (error.status === 429 || error.code === 'over_email_send_rate_limit') {
+    return 429;
+  }
 
   // --- Errores de Supabase Auth (GoTrue) ---
   const isAuthError =

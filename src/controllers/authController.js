@@ -550,7 +550,7 @@ exports.forgotPassword = asyncHandler(async (req, res) => {
   return ok(res, {
     sent: true,
     reason: 'sent',
-    message: 'Te enviamos un código de 6 dígitos a tu correo para restablecer la contraseña.'
+    message: 'Te enviamos un código a tu correo para restablecer la contraseña.'
   });
 });
 

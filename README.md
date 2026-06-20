@@ -157,11 +157,19 @@ El flujo **no usa enlaces de redirección**, sino un **código de 6 dígitos**:
    - `{ accessToken, newPassword }` (el token del paso 2, recomendado), o
    - `{ email, code, newPassword }` (atajo de un paso que valida el código aquí mismo).
 
-> **Configuración en Supabase:** para que el correo traiga el **código** (y no un enlace),
-> edita *Authentication → Email Templates → "Reset Password"* e incluye `{{ .Token }}`. La
-> **longitud** del código (6 por defecto) se ajusta en *Authentication → "Email OTP Length"*;
-> la API acepta cualquier longitud (la valida Supabase). `forgot-password`, `verify-reset-code`
-> y `reset-password` requieren `SUPABASE_SERVICE_ROLE_KEY`.
+> **Configuración en Supabase (imprescindible para que el correo llegue):**
+> 1. **SMTP propio** — *Authentication → SMTP Settings → Enable Custom SMTP*. El email
+>    integrado de Supabase es **solo para desarrollo** (limita a ~2–4 correos/hora y no entrega
+>    de forma fiable a usuarios reales). Opción simple: **Gmail con App Password**
+>    (`smtp.gmail.com`, 465/SSL o 587/TLS), o Resend/Brevo/SendGrid. Sin esto, los correos de
+>    recuperación **no se entregan** aunque la API responda `sent:true`.
+> 2. **Plantilla con el código** — *Authentication → Email Templates → "Reset Password"* →
+>    incluir `{{ .Token }}` (si no, llega un enlace en vez del código).
+> 3. La **longitud** del código (6 por defecto) se ajusta en *Authentication → "Email OTP Length"*;
+>    la API acepta cualquier longitud (la valida Supabase).
+>
+> `forgot-password`, `verify-reset-code` y `reset-password` requieren `SUPABASE_SERVICE_ROLE_KEY`.
+> Si Supabase limita el envío, `forgot-password` responde **429** con el mensaje de rate-limit.
 
 ## Formato de respuestas
 
