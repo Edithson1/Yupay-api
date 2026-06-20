@@ -62,6 +62,25 @@ function httpFromSupabaseError(error) {
 const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
 
+/**
+ * Decodifica (SIN verificar la firma) el payload de un JWT y lo devuelve como objeto.
+ * Úsalo SOLO para leer claims no sensibles (p.ej. `aud` del idToken de Google) y dar
+ * mejores mensajes de error; la verificación criptográfica real la hacen Supabase/Google,
+ * no esta función. Devuelve null si el token no es un JWT parseable.
+ */
+function decodeJwtPayload(jwt) {
+  try {
+    const parts = String(jwt).split('.');
+    if (parts.length < 2) return null;
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4 ? '='.repeat(4 - (b64.length % 4)) : '';
+    const json = Buffer.from(b64 + pad, 'base64').toString('utf8');
+    return JSON.parse(json);
+  } catch (_) {
+    return null;
+  }
+}
+
 // ---- Conversión de claves entre snake_case (DB) y camelCase (API) ----
 const snakeToCamel = (s) => s.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
 const camelToSnake = (s) => s.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase());
@@ -106,6 +125,7 @@ module.exports = {
   fail,
   httpFromSupabaseError,
   asyncHandler,
+  decodeJwtPayload,
   snakeToCamel,
   camelToSnake,
   rowToCamel,

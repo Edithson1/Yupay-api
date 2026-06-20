@@ -1,6 +1,6 @@
 # Render Blueprint para la API Yupay Turismo (Node + Express + Supabase).
-# Despliega SOLO la carpeta api/ (rootDir). El frontend web (web/) y la app Android
-# (02_app/) no se despliegan con este blueprint.
+# Este repositorio (Yupay-api) ES la API: el package.json está en la raíz, así que NO se
+# usa rootDir. La consola web de pruebas (web/) vive fuera de este repo y no se despliega.
 #
 # Uso:
 #   1) Sube este repositorio a GitHub/GitLab.
@@ -8,12 +8,12 @@
 #      render.yaml automáticamente).
 #   3) Render crea el servicio. Entra a "Environment" y rellena los secretos marcados
 #      abajo con "sync: false" (no se versionan):
-#        SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY,
-#        GEMINI_API_KEY, PASSWORD_RESET_REDIRECT_URL.
+#        SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, GEMINI_API_KEY.
 #   4) Tras el deploy tendrás una URL pública https://<servicio>.onrender.com
 #      (ese es el baseUrl que usará la app Android y la consola web de pruebas).
-#   5) Si usas el reset de contraseña, añade la URL de tu página de reset a
-#      Supabase -> Authentication -> URL Configuration -> Redirect URLs.
+#   5) El reset de contraseña va por CÓDIGO de 6 dígitos (OTP): edita la plantilla
+#      Supabase -> Authentication -> Email Templates -> "Reset Password" con {{ .Token }}.
+#      (Opcional) Define GOOGLE_WEB_CLIENT_ID / GOOGLE_ANDROID_CLIENT_ID para Google nativo.
 #
 # Nota: el plan "free" se suspende tras inactividad (cold start de ~30-60 s en la
 # primera petición). Para evitarlo, sube de plan o usa un ping periódico.
@@ -21,7 +21,6 @@ services:
   - type: web
     name: yupay-turismo-api
     runtime: node
-    rootDir: api
     plan: free
     region: oregon
     buildCommand: npm install
@@ -41,7 +40,11 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-      - key: PASSWORD_RESET_REDIRECT_URL
+      # Opcionales (Google nativo Android): Client ID Web y Android. Vacíos => la API
+      # sigue funcionando; la validación del idToken la hace Supabase.
+      - key: GOOGLE_WEB_CLIENT_ID
+        sync: false
+      - key: GOOGLE_ANDROID_CLIENT_ID
         sync: false
       # --- No secretos: valores por defecto (editables en el dashboard). ---
       - key: GEMINI_MODEL

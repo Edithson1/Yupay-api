@@ -36,14 +36,14 @@ La API queda en `http://localhost:3000`. Healthcheck: `GET /health`.
 
 ## Despliegue en Render
 
-El repositorio incluye un **Blueprint** (`render.yaml` en la raíz) que despliega solo la
-carpeta `api/`:
+Este repositorio **es** la API (el `package.json` está en la raíz) e incluye un **Blueprint**
+(`render.yaml` en la raíz, sin `rootDir`):
 
 1. Sube el repo a GitHub/GitLab.
 2. En Render: **New + → Blueprint** y selecciona el repo (detecta `render.yaml`).
 3. En **Environment** del servicio, rellena los secretos (no se versionan):
-   `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`,
-   `PASSWORD_RESET_REDIRECT_URL`.
+   `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY` y,
+   opcionalmente, `GOOGLE_WEB_CLIENT_ID` / `GOOGLE_ANDROID_CLIENT_ID` (Google nativo).
 4. Render ejecuta `npm install` y `npm start`, comprueba `GET /health` y publica la URL
    `https://<servicio>.onrender.com` (ese es el `baseUrl` para la app y la consola web).
 
@@ -56,8 +56,8 @@ Notas:
 
 Todos los endpoints (salvo `/auth/config`, `/auth/register`, `/auth/login`,
 `/auth/google`, `/auth/google/idtoken`, `/auth/refresh`, `/auth/check-email`,
-`/auth/resend-verification`, `/auth/forgot-password`, `/auth/reset-password` y `/health`)
-requieren el header:
+`/auth/resend-verification`, `/auth/forgot-password`, `/auth/verify-reset-code`,
+`/auth/reset-password` y `/health`) requieren el header:
 
 ```
 Authorization: Bearer <accessToken>
@@ -121,6 +121,48 @@ Respuesta: `{ success, data: { user, session, isNewUser } }` (mismo formato de s
 > `Provider (issuer "https://accounts.google.com") is not enabled`, y `/auth/google`
 > responde **401** si el `accessToken` no es válido.
 
+### Google nativo en Android (`POST /auth/google/idtoken`)
+
+Para la app Android (Credential Manager / One Tap, sin navegador): la app obtiene un
+`idToken` de Google y lo manda a `POST /auth/google/idtoken`; la API lo canjea con
+`signInWithIdToken` y devuelve una sesión real de Supabase (`accessToken` + `refreshToken`)
+más `isNewUser`. Body: `{ idToken, nonce?, hardwareDeviceId?, deviceName?, businessName?, businessCategory? }`.
+
+**Sobre el límite de "un solo Client ID" en Supabase:** el campo principal *Client ID* del
+provider Google guarda **uno** (el **Web**), pero el campo **"Authorized Client IDs"** admite
+**varios separados por coma** — ahí van el Client ID **Web** y el de **Android**. La app debe
+usar el **Client ID Web** como `serverClientId` de Credential Manager (el de Android solo
+autoriza la app por *package + SHA-1*).
+
+Variables **opcionales** del `.env` (`GOOGLE_WEB_CLIENT_ID`, `GOOGLE_ANDROID_CLIENT_ID`):
+- se exponen en `GET /auth/config` (`googleWebClientId`, `googleAndroidClientId`) para que la
+  app sepa qué `serverClientId` usar;
+- si están definidas, la API **pre-valida** el `aud` del `idToken` y devuelve un error claro
+  si el token vino de un Client ID desconocido (la verificación criptográfica real la hace
+  Supabase). Si se dejan vacías, todo sigue funcionando.
+
+### Recuperación de contraseña por código de 6 dígitos (OTP)
+
+El flujo **no usa enlaces de redirección**, sino un **código de 6 dígitos**:
+
+1. `POST /auth/forgot-password` `{ email }` → envía el código **solo si** el correo está
+   registrado **y tiene contraseña** (identidad `email`). Respuesta `200`:
+   - `{ sent: true, reason: 'sent', message }` → código enviado.
+   - `{ sent: false, reason: 'not_registered', message }` → no hay cuenta con ese correo.
+   - `{ sent: false, reason: 'oauth_only', message }` → cuenta de solo-Google (sin contraseña).
+2. `POST /auth/verify-reset-code` `{ email, code }` → valida el código. Si es correcto,
+   `{ valid: true, session: { accessToken, refreshToken, … }, user }`. El código es de **un
+   solo uso**: por eso se devuelve el `accessToken` de recuperación para el paso 3.
+3. `POST /auth/reset-password` → cambia la contraseña, de dos formas:
+   - `{ accessToken, newPassword }` (el token del paso 2, recomendado), o
+   - `{ email, code, newPassword }` (atajo de un paso que valida el código aquí mismo).
+
+> **Configuración en Supabase:** para que el correo traiga el **código** (y no un enlace),
+> edita *Authentication → Email Templates → "Reset Password"* e incluye `{{ .Token }}`. La
+> **longitud** del código (6 por defecto) se ajusta en *Authentication → "Email OTP Length"*;
+> la API acepta cualquier longitud (la valida Supabase). `forgot-password`, `verify-reset-code`
+> y `reset-password` requieren `SUPABASE_SERVICE_ROLE_KEY`.
+
 ## Formato de respuestas
 
 - Éxito: `{ "success": true, "data": { ... } }`
@@ -141,8 +183,9 @@ a snake_case para Supabase.
 | POST   | /auth/refresh     | No   | Refresca la sesión |
 | POST   | /auth/check-email | No   | `{ email }` → `{ exists, confirmed }` (evitar repetir / detectar no registrado) |
 | POST   | /auth/resend-verification | No | Reenvía el correo de verificación de registro |
-| POST   | /auth/forgot-password | No | Envía el correo de restablecimiento de contraseña |
-| POST   | /auth/reset-password  | No | Completa el cambio de contraseña con el token de recuperación |
+| POST   | /auth/forgot-password | No | Envía un **código de 6 dígitos** (OTP) si el correo tiene contraseña |
+| POST   | /auth/verify-reset-code | No | Valida el código de recuperación → token de recuperación |
+| POST   | /auth/reset-password  | No | Cambia la contraseña (token de `verify`, o `email + code`) |
 | POST   | /auth/logout      | Sí   | Revoca la sesión |
 | DELETE | /auth/account     | Sí   | Elimina la cuenta y TODOS sus datos (content, visits, products, devices, perfil) |
 | GET    | /users/me         | Sí   | Perfil del usuario |

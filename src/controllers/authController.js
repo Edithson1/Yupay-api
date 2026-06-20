@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const { supabaseAnon, supabaseAdmin, createUserClient } = require('../config/supabase');
-const { ok, fail, httpFromSupabaseError, asyncHandler } = require('../utils/helpers');
+const { ok, fail, httpFromSupabaseError, asyncHandler, decodeJwtPayload } = require('../utils/helpers');
 
 const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
 
@@ -24,6 +24,21 @@ async function findAuthUserByEmail(email) {
     if (users.length < perPage) break; // última página
   }
   return null;
+}
+
+/**
+ * ¿El usuario tiene una identidad de email/contraseña (es decir, se registró con
+ * contraseña) y no solo con un proveedor OAuth como Google?
+ * Supabase marca el proveedor 'email' en `app_metadata.providers` y en `identities`.
+ * Se usa en /auth/forgot-password: el código de recuperación solo tiene sentido para
+ * cuentas con contraseña (las de solo-Google no tienen contraseña que restablecer).
+ */
+function userHasPasswordIdentity(user) {
+  if (!user) return false;
+  const providers = (user.app_metadata && user.app_metadata.providers) || [];
+  if (Array.isArray(providers) && providers.includes('email')) return true;
+  const identities = user.identities || [];
+  return identities.some((i) => i && i.provider === 'email');
 }
 
 // Da forma camelCase a la sesión devuelta por Supabase Auth.
@@ -303,6 +318,13 @@ exports.google = asyncHandler(async (req, res) => {
  *  - nonce: el nonce EN CLARO usado al pedir la credencial (si se usó uno). Supabase lo
  *    hashea y lo compara con el del idToken. El client debe pasar al setNonce de Google
  *    el SHA-256 del nonce y enviar aquí el nonce en claro.
+ *
+ * Compatibilidad con el Client ID de Android: este endpoint NO fija ningún Client ID; el
+ * `aud` (audiencia) del idToken lo valida Supabase contra el provider Google. Para aceptar
+ * tanto el Client ID *Web* (serverClientId recomendado) como el de *Android*, añade AMBOS en
+ * Supabase -> Authentication -> Providers -> Google -> "Authorized Client IDs" (admite varios
+ * separados por coma). Si defines GOOGLE_WEB_CLIENT_ID / GOOGLE_ANDROID_CLIENT_ID en el .env,
+ * además hacemos una pre-validación del `aud` aquí para dar un error claro antes de Supabase.
  */
 exports.googleIdToken = asyncHandler(async (req, res) => {
   const {
@@ -318,6 +340,28 @@ exports.googleIdToken = asyncHandler(async (req, res) => {
     return fail(res, 400, 'idToken de Google es obligatorio');
   }
 
+  // Pre-validación OPCIONAL de la audiencia (solo si configuraste los Client ID en el .env):
+  // comprobamos que el idToken fue emitido para un Client ID conocido ANTES de llamar a
+  // Supabase, para dar un mensaje accionable. La verificación criptográfica real (firma de
+  // Google + audiencia autorizada) la sigue haciendo Supabase en signInWithIdToken.
+  const allowedAudiences = [
+    process.env.GOOGLE_WEB_CLIENT_ID,
+    process.env.GOOGLE_ANDROID_CLIENT_ID
+  ].filter(Boolean);
+  if (allowedAudiences.length) {
+    const payload = decodeJwtPayload(idToken);
+    const aud = payload && payload.aud;
+    if (aud && !allowedAudiences.includes(aud)) {
+      return fail(
+        res,
+        401,
+        `El idToken de Google se emitió para un Client ID no autorizado (aud=${aud}). ` +
+          'Usa el Client ID Web como serverClientId en la app y registra ese Client ID (y el de ' +
+          'Android) en Supabase -> Authentication -> Providers -> Google -> "Authorized Client IDs".'
+      );
+    }
+  }
+
   // Canjea el idToken de Google por una sesión de Supabase (registro o login).
   const { data, error } = await supabaseAnon.auth.signInWithIdToken({
     provider: 'google',
@@ -326,7 +370,14 @@ exports.googleIdToken = asyncHandler(async (req, res) => {
   });
   if (error || !data || !data.session || !data.user) {
     const status = error ? httpFromSupabaseError(error) : 401;
-    return fail(res, status, (error && error.message) || 'El idToken de Google no es válido o expiró');
+    let message = (error && error.message) || 'El idToken de Google no es válido o expiró';
+    // El error típico cuando el Client ID del token no está autorizado en Supabase.
+    if (error && /audience|client.?id|\baud\b|not enabled|unauthorized|provider/i.test(error.message || '')) {
+      message +=
+        ' · Revisa que el Client ID (Web y/o Android) esté en Supabase -> Authentication -> ' +
+        'Providers -> Google -> "Authorized Client IDs".';
+    }
+    return fail(res, status, message);
   }
 
   const user = data.user;
@@ -362,7 +413,13 @@ exports.config = (req, res) => {
     supabaseAnonKey: process.env.SUPABASE_ANON_KEY || null,
     // Google se gestiona por completo en Supabase; basta con tenerlo habilitado allí.
     googleEnabled: true,
-    emailPasswordEnabled: true
+    emailPasswordEnabled: true,
+    // Client ID de Google (PÚBLICOS). La app Android usa `googleWebClientId` como
+    // serverClientId de Credential Manager; el de Android (package + SHA-1) autoriza la app.
+    // Ambos deben estar en Supabase -> Authentication -> Providers -> Google ->
+    // "Authorized Client IDs" (ese campo admite varios separados por coma).
+    googleWebClientId: process.env.GOOGLE_WEB_CLIENT_ID || null,
+    googleAndroidClientId: process.env.GOOGLE_ANDROID_CLIENT_ID || null
   });
 };
 
@@ -445,54 +502,129 @@ exports.resendVerification = asyncHandler(async (req, res) => {
 
 /**
  * POST /auth/forgot-password  (público)
- * Envía el correo de restablecimiento de contraseña (Supabase resetPasswordForEmail).
- * Body: { email, redirectTo? }
- *  - redirectTo: URL a la que Supabase redirige tras hacer click (con un token de
- *    recuperación). Si no se envía, usa PASSWORD_RESET_REDIRECT_URL del .env.
+ * Inicia la recuperación de contraseña por CÓDIGO de 6 dígitos (OTP), no por enlace.
+ * Body: { email }
  *
- * Por seguridad (anti-enumeración) responde 200 aunque el correo no exista.
+ * Flujo:
+ *   1) Solo se envía el código si el correo está registrado y tiene CONTRASEÑA (identidad
+ *      'email'). Si no existe o es una cuenta de solo-Google, NO se envía nada y se devuelve
+ *      un mensaje explicando por qué (data.sent = false, data.reason).
+ *   2) Supabase manda el correo con resetPasswordForEmail. Para que el correo traiga el
+ *      código de 6 dígitos (en vez de un enlace), la plantilla "Reset Password" de Supabase
+ *      (Authentication -> Email Templates) debe incluir {{ .Token }}.
+ *   3) El código se valida luego en POST /auth/verify-reset-code.
+ *
+ * Requiere service_role (para consultar si el correo existe y tiene contraseña).
+ *
+ * NOTA: comprobar si un correo existe permite enumeración de usuarios; es una decisión de
+ * producto (la UI necesita avisar "este correo no está registrado").
  */
 exports.forgotPassword = asyncHandler(async (req, res) => {
-  const { email, redirectTo } = req.body || {};
+  const { email } = req.body || {};
   if (!email) return fail(res, 400, 'email es obligatorio');
-
-  const options = {};
-  const target = redirectTo || process.env.PASSWORD_RESET_REDIRECT_URL;
-  if (target) options.redirectTo = target;
-
-  const { error } = await supabaseAnon.auth.resetPasswordForEmail(email, options);
-  // Solo propagamos fallos del servidor; no revelamos si el email existe.
-  if (error && (error.status === undefined || error.status >= 500)) {
-    return fail(res, httpFromSupabaseError(error), error.message);
-  }
-
-  return ok(res, { sent: true });
-});
-
-/**
- * POST /auth/reset-password  (público; necesita el token del enlace de recuperación)
- * Completa el cambio de contraseña. El flujo recomendado es que el cliente (web/app)
- * tras abrir el enlace de recuperación obtenga el accessToken de la sesión de recovery
- * y lo envíe aquí junto con la nueva contraseña.
- * Body: { accessToken, newPassword }
- * Requiere service_role.
- */
-exports.resetPassword = asyncHandler(async (req, res) => {
-  const { accessToken, newPassword } = req.body || {};
-  if (!accessToken || !newPassword) {
-    return fail(res, 400, 'accessToken y newPassword son obligatorios');
-  }
   if (!supabaseAdmin) {
     return fail(res, 500, 'SUPABASE_SERVICE_ROLE_KEY no está configurada en el servidor');
   }
 
-  // Verifica el token de recuperación y obtiene a quién pertenece.
-  const { data, error } = await supabaseAnon.auth.getUser(accessToken);
-  if (error || !data || !data.user) {
-    return fail(res, 401, 'El token de recuperación no es válido o expiró');
+  const user = await findAuthUserByEmail(email);
+  if (!user) {
+    return ok(res, {
+      sent: false,
+      reason: 'not_registered',
+      message: 'No hay ninguna cuenta registrada con este correo.'
+    });
+  }
+  if (!userHasPasswordIdentity(user)) {
+    return ok(res, {
+      sent: false,
+      reason: 'oauth_only',
+      message: 'Esta cuenta inicia sesión con Google y no tiene contraseña que restablecer.'
+    });
   }
 
-  const { error: updErr } = await supabaseAdmin.auth.admin.updateUserById(data.user.id, {
+  // Envía el correo de recuperación. Sin redirectTo: el flujo es por código (OTP), el enlace
+  // de redirección ya no se usa. El código de 6 dígitos sale de {{ .Token }} en la plantilla.
+  const { error } = await supabaseAnon.auth.resetPasswordForEmail(email);
+  if (error) return fail(res, httpFromSupabaseError(error), error.message);
+
+  return ok(res, {
+    sent: true,
+    reason: 'sent',
+    message: 'Te enviamos un código de 6 dígitos a tu correo para restablecer la contraseña.'
+  });
+});
+
+/**
+ * POST /auth/verify-reset-code  (público)
+ * Comprueba la validez del código de 6 dígitos (OTP de recuperación).
+ * Body: { email, code }
+ *
+ * verifyOtp(type:'recovery') valida y CONSUME el código; si es válido devuelve una sesión de
+ * recuperación. Devolvemos su accessToken para que el cliente complete el cambio en
+ * POST /auth/reset-password SIN reenviar el código (ya consumido).
+ *  - 200 { valid: true, session, user }  -> código correcto.
+ *  - 400 { error }                       -> código inválido o expirado.
+ */
+exports.verifyResetCode = asyncHandler(async (req, res) => {
+  const { email, code } = req.body || {};
+  if (!email || !code) return fail(res, 400, 'email y code son obligatorios');
+
+  const { data, error } = await supabaseAnon.auth.verifyOtp({
+    email,
+    token: String(code).trim(),
+    type: 'recovery'
+  });
+  if (error || !data || !data.session) {
+    return fail(res, 400, 'El código es inválido o expiró. Solicita uno nuevo.');
+  }
+
+  return ok(res, {
+    valid: true,
+    session: shapeSession(data.session),
+    user: data.user ? { id: data.user.id, email: data.user.email } : null
+  });
+});
+
+/**
+ * POST /auth/reset-password  (público; necesita probar la recuperación)
+ * Completa el cambio de contraseña. Dos formas de identificar al usuario:
+ *   (A) { accessToken, newPassword }   -> accessToken de la sesión de recuperación
+ *                                          (el que devuelve POST /auth/verify-reset-code).
+ *   (B) { email, code, newPassword }   -> atajo de un paso: valida el código aquí mismo.
+ * Requiere service_role.
+ */
+exports.resetPassword = asyncHandler(async (req, res) => {
+  const { accessToken, email, code, newPassword } = req.body || {};
+  if (!newPassword) return fail(res, 400, 'newPassword es obligatorio');
+  if (!supabaseAdmin) {
+    return fail(res, 500, 'SUPABASE_SERVICE_ROLE_KEY no está configurada en el servidor');
+  }
+
+  let userId = null;
+
+  if (accessToken) {
+    // (A) Verifica la sesión de recuperación y obtiene a quién pertenece.
+    const { data, error } = await supabaseAnon.auth.getUser(accessToken);
+    if (error || !data || !data.user) {
+      return fail(res, 401, 'La sesión de recuperación no es válida o expiró');
+    }
+    userId = data.user.id;
+  } else if (email && code) {
+    // (B) Valida (y consume) el código directamente.
+    const { data, error } = await supabaseAnon.auth.verifyOtp({
+      email,
+      token: String(code).trim(),
+      type: 'recovery'
+    });
+    if (error || !data || !data.user) {
+      return fail(res, 400, 'El código es inválido o expiró. Solicita uno nuevo.');
+    }
+    userId = data.user.id;
+  } else {
+    return fail(res, 400, 'Envía { accessToken } (de verify-reset-code) o { email, code }');
+  }
+
+  const { error: updErr } = await supabaseAdmin.auth.admin.updateUserById(userId, {
     password: newPassword
   });
   if (updErr) return fail(res, httpFromSupabaseError(updErr), updErr.message);
