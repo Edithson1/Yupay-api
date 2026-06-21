@@ -14,6 +14,7 @@ router.post('/refresh', c.refresh);
 // --- Gestión de correo / contraseña (público) ---
 router.post('/check-email', c.checkEmail); // ¿el correo ya existe? (evitar repetir / detectar no registrado)
 router.post('/resend-verification', c.resendVerification); // reenviar correo de verificación
+router.post('/verify-signup-code', c.verifySignupCode); // confirma el registro con código (OTP de signup)
 router.post('/forgot-password', c.forgotPassword); // envía un código de 6 dígitos (OTP) si el correo tiene contraseña
 router.post('/verify-reset-code', c.verifyResetCode); // valida el código de recuperación (OTP)
 router.post('/reset-password', c.resetPassword); // completa el cambio (token de verify, o email + code)

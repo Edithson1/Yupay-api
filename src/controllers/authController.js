@@ -501,6 +501,71 @@ exports.resendVerification = asyncHandler(async (req, res) => {
 });
 
 /**
+ * POST /auth/verify-signup-code  (público)
+ * Confirma el REGISTRO con un CÓDIGO de N dígitos (OTP), igual que el reset por código.
+ * En lugar del enlace por defecto, Supabase envía el código en la plantilla "Confirm signup"
+ * (debe incluir {{ .Token }}). Este endpoint:
+ *   1) valida y consume el código con verifyOtp(type:'signup') -> confirma el correo y crea
+ *      una sesión real (accessToken + refreshToken);
+ *   2) crea/actualiza el perfil en public.users y registra el dispositivo (igual que /register
+ *      cuando la confirmación de correo está desactivada).
+ *
+ * Body: { email, code, hardwareDeviceId?, deviceName?, businessName?, businessCategory? }
+ * Respuesta: { user, session, isNewUser: true } (mismo formato que /auth/login + isNewUser).
+ */
+exports.verifySignupCode = asyncHandler(async (req, res) => {
+  const { email, code, hardwareDeviceId, deviceName, businessName, businessCategory } =
+    req.body || {};
+  if (!email || !code) return fail(res, 400, 'email y code son obligatorios');
+
+  const { data, error } = await supabaseAnon.auth.verifyOtp({
+    email,
+    token: String(code).trim(),
+    type: 'signup'
+  });
+  if (error || !data || !data.session || !data.user) {
+    return fail(res, 400, 'El código es inválido o expiró. Solicita uno nuevo.');
+  }
+
+  const user = data.user;
+  const session = data.session;
+  const userClient = createUserClient(session.access_token);
+
+  // Perfil: actualiza la fila si existe; si no (sin trigger), la inserta.
+  const { data: updated, error: updErr } = await userClient
+    .from('users')
+    .update({
+      business_name: businessName ?? null,
+      business_category: businessCategory ?? null,
+      last_modified: new Date().toISOString()
+    })
+    .eq('id', user.id)
+    .select('id');
+  if (updErr) return fail(res, httpFromSupabaseError(updErr), updErr.message);
+
+  if (!updated || updated.length === 0) {
+    const { error: insErr } = await userClient.from('users').insert({
+      id: user.id,
+      business_name: businessName ?? null,
+      business_category: businessCategory ?? null
+    });
+    if (insErr) return fail(res, httpFromSupabaseError(insErr), insErr.message);
+  }
+
+  await upsertDevice(userClient, user.id, {
+    hardwareDeviceId,
+    deviceName,
+    refreshToken: session.refresh_token
+  });
+
+  return ok(res, {
+    user: { id: user.id, email: user.email },
+    session: shapeSession(session),
+    isNewUser: true
+  });
+});
+
+/**
  * POST /auth/forgot-password  (público)
  * Inicia la recuperación de contraseña por CÓDIGO de 6 dígitos (OTP), no por enlace.
  * Body: { email }
