@@ -15,8 +15,9 @@ function mapProductRow(p, userId) {
     is_default: p.isDefault ?? false,
     discount_value: p.discountValue ?? null,
     discount_type: p.discountType ?? null,
-    discount_start_date: p.discountStartDate ?? null,
-    discount_end_date: p.discountEndDate ?? null,
+    // timestamptz: aceptar epoch ms o ISO (toIso normaliza ambos), igual que registration_date.
+    discount_start_date: p.discountStartDate != null ? toIso(p.discountStartDate) : null,
+    discount_end_date: p.discountEndDate != null ? toIso(p.discountEndDate) : null,
     last_modified: new Date().toISOString()
   };
   return row;

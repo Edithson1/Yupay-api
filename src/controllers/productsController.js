@@ -1,6 +1,6 @@
 'use strict';
 
-const { ok, fail, httpFromSupabaseError, asyncHandler, rowToCamel } = require('../utils/helpers');
+const { ok, fail, httpFromSupabaseError, asyncHandler, rowToCamel, toIso } = require('../utils/helpers');
 const { triggerBackground } = require('../services/contentGenerator');
 
 /**
@@ -16,8 +16,9 @@ function mapProductIn(body, userId) {
     is_default: body.isDefault ?? false,
     discount_value: body.discountValue ?? null,
     discount_type: body.discountType ?? null,
-    discount_start_date: body.discountStartDate ?? null,
-    discount_end_date: body.discountEndDate ?? null,
+    // timestamptz: aceptar epoch ms o ISO (toIso normaliza ambos).
+    discount_start_date: body.discountStartDate != null ? toIso(body.discountStartDate) : null,
+    discount_end_date: body.discountEndDate != null ? toIso(body.discountEndDate) : null,
     last_modified: new Date().toISOString()
   };
 }
