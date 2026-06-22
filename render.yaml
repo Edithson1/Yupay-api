@@ -40,12 +40,14 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-      # Opcionales (Google nativo Android): Client ID Web y Android. Vacíos => la API
-      # sigue funcionando; la validación del idToken la hace Supabase.
+      # Google nativo. NO son secretos (son públicos), por eso van con valor aquí para que el
+      # despliegue funcione sin tocar el dashboard. El Client ID WEB es el que la app usa como
+      # serverClientId (lo expone GET /auth/config) y contra el que Supabase valida el `aud` del
+      # idToken; el de Android autoriza la app por package + SHA-1. Son IDs DISTINTOS.
       - key: GOOGLE_WEB_CLIENT_ID
-        sync: false
+        value: 671243718941-v9qphoe5a4ipkefbj897q5ev543b3uiu.apps.googleusercontent.com
       - key: GOOGLE_ANDROID_CLIENT_ID
-        sync: false
+        value: 671243718941-i8crtd8fajd8mhg1vmnaurn16mq82pkt.apps.googleusercontent.com
       # --- No secretos: valores por defecto (editables en el dashboard). ---
       - key: GEMINI_MODEL
         value: gemini-2.5-flash-lite
