@@ -249,6 +249,11 @@ exports.pull = asyncHandler(async (req, res) => {
   const userId = req.user.id;
   const since = req.query.since ? toIso(req.query.since) : null;
 
+  // Marca de tiempo del SERVIDOR, capturada ANTES de las queries: el cliente la
+  // guarda como watermark (lastSyncAt). Así el próximo ?since= vive en el marco
+  // temporal del servidor y no se salta cambios por desfase de reloj (clock skew).
+  const serverTime = new Date().toISOString();
+
   const { data: user, error: userErr } = await req.supabase
     .from('users')
     .select('*')
@@ -262,7 +267,9 @@ exports.pull = asyncHandler(async (req, res) => {
 
   if (since) {
     productsQuery = productsQuery.gt('last_modified', since);
-    visitsQuery = visitsQuery.gt('registration_date', since);
+    // Visitas por last_modified (no registration_date): así se propagan también
+    // las ediciones y los cambios de estado is_sent de visitas ya existentes.
+    visitsQuery = visitsQuery.gt('last_modified', since);
     contentQuery = contentQuery.gt('last_modified', since);
   }
 
@@ -280,6 +287,7 @@ exports.pull = asyncHandler(async (req, res) => {
     user: user ? rowToCamel(user) : null,
     products: rowToCamel(productsRes.data),
     visits: rowToCamel(visitsRes.data),
-    content: rowToCamel(contentRes.data)
+    content: rowToCamel(contentRes.data),
+    serverTime
   });
 });

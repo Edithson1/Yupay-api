@@ -49,6 +49,25 @@ exports.list = asyncHandler(async (req, res) => {
 exports.create = asyncHandler(async (req, res) => {
   const b = req.body || {};
 
+  const registrationDate =
+    b.registrationDate != null ? toIso(b.registrationDate) : new Date().toISOString();
+
+  // Idempotencia: si ya existe una visita con este (user_id, registration_date),
+  // la devolvemos en lugar de insertar. Evita duplicados cuando dos dispositivos
+  // de la misma cuenta suben la misma visita compartida por P2P. La unicidad dura
+  // la garantiza el índice visits_user_regdate_unique (ver sql/visits_dedup.sql).
+  if (registrationDate) {
+    const { data: existing, error: findErr } = await req.supabase
+      .from('visits')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .eq('registration_date', registrationDate)
+      .order('id', { ascending: true })
+      .limit(1);
+    if (findErr) return fail(res, httpFromSupabaseError(findErr), findErr.message);
+    if (existing && existing.length) return ok(res, rowToCamel(existing[0]), 200);
+  }
+
   const payload = {
     user_id: req.user.id,
     device_id: b.deviceId ?? null,
@@ -60,7 +79,7 @@ exports.create = asyncHandler(async (req, res) => {
     discount_type: b.discountType ?? null,
     total_amount: b.totalAmount ?? null,
     currency: b.currency ?? null,
-    registration_date: b.registrationDate != null ? toIso(b.registrationDate) : new Date().toISOString(),
+    registration_date: registrationDate,
     is_sent: b.isSent ?? false,
     sent_date: b.sentDate != null ? toIso(b.sentDate) : null
   };
