@@ -241,9 +241,10 @@ exports.push = asyncHandler(async (req, res) => {
 
 /**
  * GET /sync/pull?since=<ISO>
- * Devuelve cambios desde "since": { user, products[], visits[], content[] }.
- * products/content filtran por last_modified > since; visits por registration_date > since.
- * Sin "since" devuelve todo.
+ * Devuelve los cambios ocurridos DESPUÉS de "since": { user, products[], visits[], content[], deletions[] }.
+ * user/products/visits/content filtran por last_modified > since (el PERFIL incluido, para no
+ * revertir ediciones locales que aún no se han terminado de subir). Sin "since" (primer enlace)
+ * devuelve todo.
  */
 exports.pull = asyncHandler(async (req, res) => {
   const userId = req.user.id;
@@ -254,11 +255,15 @@ exports.pull = asyncHandler(async (req, res) => {
   // temporal del servidor y no se salta cambios por desfase de reloj (clock skew).
   const serverTime = new Date().toISOString();
 
-  const { data: user, error: userErr } = await req.supabase
-    .from('users')
-    .select('*')
-    .eq('id', userId)
-    .maybeSingle();
+  // El PERFIL se filtra por "since" igual que products/visits/content: sólo se devuelve si su
+  // last_modified es posterior a "since". Antes se devolvía SIEMPRE, así que cualquier pull (poll
+  // de respaldo de 60s, Realtime o reconexión) reescribía el perfil local aunque la BD no hubiera
+  // cambiado, revirtiendo una edición de perfil que aún no se había terminado de subir (el outbox
+  // todavía no había drenado el PendingOp). Sin "since" (primer enlace) se devuelve siempre.
+  // Ver CloudSyncRepository.applyPull() y el guard skipProfile en el cliente.
+  let userQuery = req.supabase.from('users').select('*').eq('id', userId);
+  if (since) userQuery = userQuery.gt('last_modified', since);
+  const { data: user, error: userErr } = await userQuery.maybeSingle();
   if (userErr) return fail(res, httpFromSupabaseError(userErr), userErr.message);
 
   let productsQuery = req.supabase.from('products').select('*').eq('user_id', userId);
