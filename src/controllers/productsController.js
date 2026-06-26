@@ -98,6 +98,17 @@ exports.remove = asyncHandler(async (req, res) => {
   if (error) return fail(res, httpFromSupabaseError(error), error.message);
   if (!data || data.length === 0) return fail(res, 404, 'Producto no encontrado');
 
+  // Tombstone: registra el borrado para que el /sync/pull lo propague a otros
+  // dispositivos. Best-effort: si la tabla `deletions` aún no existe (migración
+  // pendiente), no rompemos el borrado (solo no se propagará hasta aplicar el SQL).
+  const { error: tombErr } = await req.supabase
+    .from('deletions')
+    .upsert(
+      { user_id: req.user.id, entity_type: 'product', remote_id: Number(id) },
+      { onConflict: 'user_id,entity_type,remote_id', ignoreDuplicates: true }
+    );
+  if (tombErr) console.error('[deletions] tombstone de producto no registrado:', tombErr.message);
+
   triggerBackground(req.user.id, 'product-delete');
   return ok(res, { deleted: true, id });
 });

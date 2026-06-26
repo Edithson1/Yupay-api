@@ -283,11 +283,27 @@ exports.pull = asyncHandler(async (req, res) => {
   if (visitsRes.error) return fail(res, httpFromSupabaseError(visitsRes.error), visitsRes.error.message);
   if (contentRes.error) return fail(res, httpFromSupabaseError(contentRes.error), contentRes.error.message);
 
+  // Borrados (tombstones) ocurridos después de `since`: el cliente los aplica
+  // localmente (deleteByRemoteId) para reflejar lo que se borró en OTRO dispositivo.
+  // En el primer enlace (sin `since`) no hacen falta: el cliente hace replace total.
+  // Best-effort: si la tabla `deletions` aún no existe, no rompe el pull.
+  let deletions = [];
+  if (since) {
+    const { data: delRows, error: delErr } = await req.supabase
+      .from('deletions')
+      .select('entity_type, remote_id')
+      .eq('user_id', userId)
+      .gt('deleted_at', since);
+    if (delErr) console.error('[pull] tabla deletions no disponible:', delErr.message);
+    else deletions = (delRows || []).map((d) => ({ type: d.entity_type, id: d.remote_id }));
+  }
+
   return ok(res, {
     user: user ? rowToCamel(user) : null,
     products: rowToCamel(productsRes.data),
     visits: rowToCamel(visitsRes.data),
     content: rowToCamel(contentRes.data),
+    deletions,
     serverTime
   });
 });
