@@ -153,6 +153,18 @@ exports.register = asyncHandler(async (req, res) => {
     return fail(res, 400, 'email y password son obligatorios');
   }
 
+  // Pre-chequeo anti "cuenta ya usada": con la confirmación por OTP activada, signUp() NO
+  // devuelve error si el correo ya existe (Supabase devuelve un usuario "ofuscado" sin sesión
+  // para no filtrar la existencia). Si el correo ya pertenece a una cuenta CONFIRMADA cortamos
+  // aquí con 409 para que la app muestre "cuenta ya usada". Si existe pero está SIN confirmar
+  // (registro a medias), dejamos pasar: signUp reenvía el código y el usuario completa el OTP.
+  if (supabaseAdmin) {
+    const existing = await findAuthUserByEmail(email);
+    if (existing && Boolean(existing.email_confirmed_at || existing.confirmed_at)) {
+      return fail(res, 409, 'Ya existe una cuenta con este correo. Inicia sesión.');
+    }
+  }
+
   const { data, error } = await supabaseAnon.auth.signUp({ email, password });
   if (error) return fail(res, httpFromSupabaseError(error), error.message);
 
@@ -219,7 +231,16 @@ exports.login = asyncHandler(async (req, res) => {
   }
 
   const { data, error } = await supabaseAnon.auth.signInWithPassword({ email, password });
-  if (error) return fail(res, httpFromSupabaseError(error), error.message);
+  if (error) {
+    // Distinguir "correo sin cuenta" de "contraseña incorrecta": Supabase devuelve el mismo
+    // "Invalid login credentials" en ambos casos. Solo cuando el login FALLA consultamos si el
+    // correo existe (para no penalizar con una llamada extra el login correcto).
+    if (supabaseAdmin) {
+      const existing = await findAuthUserByEmail(email);
+      if (!existing) return fail(res, 404, 'No hay ninguna cuenta registrada con este correo.');
+    }
+    return fail(res, httpFromSupabaseError(error), error.message);
+  }
 
   const session = data.session;
   const userClient = createUserClient(session.access_token);
@@ -330,6 +351,7 @@ exports.googleIdToken = asyncHandler(async (req, res) => {
   const {
     idToken,
     nonce,
+    mode,
     hardwareDeviceId,
     deviceName,
     businessName,
@@ -359,6 +381,29 @@ exports.googleIdToken = asyncHandler(async (req, res) => {
           'Usa el Client ID Web como serverClientId en la app y registra ese Client ID (y el de ' +
           'Android) en Supabase -> Authentication -> Providers -> Google -> "Authorized Client IDs".'
       );
+    }
+  }
+
+  // Pre-chequeo de intención (login vs registro) por el correo del idToken, ANTES de canjearlo.
+  // signInWithIdToken CREA el usuario si no existe, así que sin esto un "login con Google" de un
+  // correo nuevo crearía una cuenta huérfana. Con `mode` respetamos la pantalla de origen:
+  //   - register + correo ya existente  → 409 (cuenta ya usada), sin crear/duplicar nada.
+  //   - login    + correo inexistente   → 404 (correo sin cuenta), sin crear la cuenta.
+  // El correo del idToken lo verifica Google (claim email/email_verified); aquí solo lo usamos
+  // para decidir la intención. La verificación criptográfica real la hace Supabase más abajo.
+  // Si no llega `mode` (clientes antiguos / flujo web) se conserva el comportamiento previo.
+  const normalizedMode = mode === 'login' || mode === 'register' ? mode : null;
+  if (normalizedMode && supabaseAdmin) {
+    const payload = decodeJwtPayload(idToken);
+    const email = payload && payload.email;
+    if (email) {
+      const existing = await findAuthUserByEmail(email);
+      if (normalizedMode === 'register' && existing) {
+        return fail(res, 409, 'Ya existe una cuenta con este correo. Inicia sesión.');
+      }
+      if (normalizedMode === 'login' && !existing) {
+        return fail(res, 404, 'No hay ninguna cuenta registrada con este correo.');
+      }
     }
   }
 
